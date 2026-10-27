@@ -1,4 +1,8 @@
-import { Injectable, OnModuleInit, InternalServerErrorException } from '@nestjs/common';
+import {
+  Injectable,
+  OnModuleInit,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import * as Minio from 'minio';
 import 'multer';
 
@@ -17,7 +21,9 @@ export class StorageService implements OnModuleInit {
     });
   }
 
-  async uploadFile(file: Express.Multer.File): Promise<{ url: string; fileName: string }> {
+  async uploadFile(
+    file: Express.Multer.File,
+  ): Promise<{ url: string; fileName: string }> {
     try {
       const extension = file.originalname.split('.').pop();
       const uniqueFileName = `${Date.now()}-${Math.round(Math.random() * 1e9)}.${extension}`;
@@ -38,8 +44,11 @@ export class StorageService implements OnModuleInit {
         url: fileUrl,
       };
     } catch (error: any) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      throw new InternalServerErrorException('Lỗi khi tải file lên kho MinIO: ' + errorMessage);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      throw new InternalServerErrorException(
+        'Lỗi khi tải file lên kho MinIO: ' + errorMessage,
+      );
     }
   }
 }

@@ -5,8 +5,6 @@ import { AppService } from './app.service';
 import { StorageModule } from './modules/storage/storage.module';
 import { EquipmentsModule } from './modules/equipments/equipments.module';
 import { Equipment } from './modules/equipments/equipment.entity';
-import { IncidentsModule } from './modules/incidents/incidents.module';
-import { Incident } from './modules/incidents/incident.entity';
 
 @Module({
   imports: [
@@ -17,12 +15,11 @@ import { Incident } from './modules/incidents/incident.entity';
       username: process.env.DB_USERNAME || 'admin_pccc',
       password: process.env.DB_PASSWORD || 'password123',
       database: process.env.DB_NAME || 'g18_fire_safety_db',
-      entities: [Equipment, Incident],
-      synchronize: true, // Tự động đồng bộ tạo bảng incidents trong PostgreSQL
+      entities: [Equipment],
+      synchronize: true,
     }),
     StorageModule,
     EquipmentsModule,
-    IncidentsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
