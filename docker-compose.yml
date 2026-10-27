@@ -1,0 +1,31 @@
+﻿services:
+  postgres_db:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: g18_pccc_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin_pccc
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: g18_fire_safety_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  minio_storage:
+    image: elestio/minio:latest
+    container_name: g18_pccc_minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: minio_admin
+      MINIO_ROOT_PASSWORD: password123
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+volumes:
+  postgres_data:
+  minio_data:
