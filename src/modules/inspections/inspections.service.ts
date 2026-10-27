@@ -4,7 +4,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThanOrEqual } from 'typeorm';
+import { Repository } from 'typeorm';
 import { Cron } from '@nestjs/schedule';
 import { Facility, RiskLevel, SafetyStatus } from './facility.entity';
 import {
@@ -13,6 +13,7 @@ import {
   InspectionStatus,
   InspectionConclusion,
 } from './inspection.entity';
+import { Equipment, EquipmentStatus } from '../equipments/equipment.entity';
 
 @Injectable()
 export class InspectionsService {
@@ -21,9 +22,10 @@ export class InspectionsService {
     private readonly facilityRepo: Repository<Facility>,
     @InjectRepository(Inspection)
     private readonly inspectionRepo: Repository<Inspection>,
+    @InjectRepository(Equipment)
+    private readonly equipmentRepo: Repository<Equipment>,
   ) {}
 
-  // 1. Tính khoảng cách Haversine (mét)
   private calculateHaversine(
     lat1: number,
     lon1: number,
@@ -46,7 +48,6 @@ export class InspectionsService {
     return Math.round(R * c);
   }
 
-  // 2. Kiểm tra ngày dự kiến có cách hôm nay ít nhất 3 ngày làm việc (không tính T7, CN)
   private isAtLeast3WorkingDaysAhead(targetDate: Date): boolean {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -57,7 +58,6 @@ export class InspectionsService {
     while (workingDaysAdded < 3) {
       checkDate.setDate(checkDate.getDate() + 1);
       const dayOfWeek = checkDate.getDay();
-      // Bỏ qua Thứ 7 (6) và Chủ Nhật (0)
       if (dayOfWeek !== 0 && dayOfWeek !== 6) {
         workingDaysAdded++;
       }
@@ -68,7 +68,6 @@ export class InspectionsService {
     return target >= checkDate;
   }
 
-  // 3. Tạo cơ sở mới (phục vụ test và liên kết thiết bị)
   async createFacility(data: {
     name: string;
     riskLevel?: RiskLevel;
@@ -89,7 +88,6 @@ export class InspectionsService {
     return this.facilityRepo.save(facility);
   }
 
-  // 4. Lập lịch kiểm tra (POST /api/inspections)
   async scheduleInspection(data: {
     facilityId: string;
     inspectorId: string;
@@ -105,7 +103,6 @@ export class InspectionsService {
 
     const scheduledDate = new Date(data.scheduledDate);
 
-    // Bắt buộc báo trước 3 ngày làm việc với kiểm tra định kỳ (PERIODIC)
     if (data.inspectionType === InspectionType.PERIODIC) {
       if (!this.isAtLeast3WorkingDaysAhead(scheduledDate)) {
         throw new BadRequestException(
@@ -125,7 +122,6 @@ export class InspectionsService {
     return this.inspectionRepo.save(inspection);
   }
 
-  // 5. Hoàn tất biên bản & Tự tính chu kỳ kiểm tra kế tiếp (PATCH /api/inspections/:id/complete)
   async completeInspection(
     id: string,
     data: {
@@ -147,7 +143,6 @@ export class InspectionsService {
       throw new NotFoundException('Không tìm thấy cơ sở tương ứng');
     }
 
-    // Tính khoảng cách check-in
     const distanceDiff = this.calculateHaversine(
       data.checkInLat,
       data.checkInLng,
@@ -157,9 +152,6 @@ export class InspectionsService {
 
     const actualDate = new Date();
 
-    // Tự động tính hạn kiểm tra kế tiếp theo Luật PCCC:
-    // Cơ sở HIGH (Phụ lục II): 6 tháng
-    // Cơ sở MEDIUM / LOW (Phụ lục I): 12 tháng (1 năm)
     const nextDate = new Date(actualDate);
     if (facility.riskLevel === RiskLevel.HIGH) {
       nextDate.setMonth(nextDate.getMonth() + 6);
@@ -167,7 +159,6 @@ export class InspectionsService {
       nextDate.setFullYear(nextDate.getFullYear() + 1);
     }
 
-    // Cập nhật cơ sở
     facility.lastInspectionDate = actualDate;
     facility.nextInspectionDate = nextDate;
     facility.status =
@@ -176,7 +167,6 @@ export class InspectionsService {
         : SafetyStatus.VIOLATION;
     await this.facilityRepo.save(facility);
 
-    // Cập nhật biên bản kiểm tra
     inspection.actualDate = actualDate;
     inspection.status = InspectionStatus.COMPLETED;
     inspection.conclusion = data.conclusion;
@@ -193,67 +183,119 @@ export class InspectionsService {
     };
   }
 
-  // 6. Lấy danh sách kiểm tra
-  async getAllInspections(facilityId?: string) {
-    if (facilityId) {
-      return this.inspectionRepo.find({
-        where: { facilityId },
-        order: { scheduledDate: 'DESC' },
-      });
+  async getInspectionById(id: string): Promise<Inspection> {
+    const item = await this.inspectionRepo.findOne({
+      where: { id },
+      relations: { facility: true },
+    });
+    if (!item) {
+      throw new NotFoundException('Không tìm thấy lịch kiểm tra');
     }
-    return this.inspectionRepo.find({ order: { scheduledDate: 'DESC' } });
+    return item;
   }
 
-  // 7. Lấy danh sách toàn bộ cơ sở
+  async getAllInspections(query?: {
+    facilityId?: string;
+    status?: InspectionStatus;
+    startDate?: string;
+    endDate?: string;
+  }) {
+    const qb = this.inspectionRepo.createQueryBuilder('insp');
+
+    if (query?.facilityId) {
+      qb.andWhere('insp.facilityId = :facilityId', {
+        facilityId: query.facilityId,
+      });
+    }
+    if (query?.status) {
+      qb.andWhere('insp.status = :status', { status: query.status });
+    }
+    if (query?.startDate && query?.endDate) {
+      qb.andWhere('insp.scheduledDate BETWEEN :start AND :end', {
+        start: new Date(query.startDate),
+        end: new Date(query.endDate),
+      });
+    }
+
+    qb.orderBy('insp.scheduledDate', 'DESC');
+    return qb.getMany();
+  }
+
   async getAllFacilities() {
     return this.facilityRepo.find({ order: { createdAt: 'DESC' } });
   }
 
-  // 8. Cronjob tự động quét hàng ngày lúc 00:00 (Asia/Ho_Chi_Minh)
   @Cron('0 0 * * *', { timeZone: 'Asia/Ho_Chi_Minh' })
   async handleDailyCronJob() {
     return this.runDailyCheck();
   }
 
-  // Hàm quét hạn kiểm tra (dùng chung cho Cronjob và nút Demo trực tiếp)
   async runDailyCheck() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
     const warningThreshold = new Date(today);
-    warningThreshold.setDate(warningThreshold.getDate() + 15); // Cảnh báo trước 15 ngày
+    warningThreshold.setDate(warningThreshold.getDate() + 15);
 
+    let updatedFacilities = 0;
+    let overdueInspections = 0;
+    let expiredEquipments = 0;
+
+    // 1. Quét cơ sở đổi sang WARNING hoặc VIOLATION
     const facilities = await this.facilityRepo.find();
-    let updatedCount = 0;
-
     for (const fac of facilities) {
       if (!fac.nextInspectionDate) continue;
 
       const nextDate = new Date(fac.nextInspectionDate);
       nextDate.setHours(0, 0, 0, 0);
 
-      // 1. Quá hạn kiểm tra -> VIOLATION
       if (nextDate < today && fac.status !== SafetyStatus.VIOLATION) {
         fac.status = SafetyStatus.VIOLATION;
         await this.facilityRepo.save(fac);
-        updatedCount++;
-      }
-      // 2. Còn từ 15 ngày trở xuống -> WARNING
-      else if (
+        updatedFacilities++;
+      } else if (
         nextDate <= warningThreshold &&
         nextDate >= today &&
         fac.status === SafetyStatus.SAFE
       ) {
         fac.status = SafetyStatus.WARNING;
         await this.facilityRepo.save(fac);
-        updatedCount++;
+        updatedFacilities++;
+      }
+    }
+
+    // 2. Quét lịch SCHEDULED quá hạn -> OVERDUE
+    const scheduledList = await this.inspectionRepo.find({
+      where: { status: InspectionStatus.SCHEDULED },
+    });
+    for (const insp of scheduledList) {
+      const sDate = new Date(insp.scheduledDate);
+      sDate.setHours(0, 0, 0, 0);
+      if (sDate < today) {
+        insp.status = InspectionStatus.OVERDUE;
+        await this.inspectionRepo.save(insp);
+        overdueInspections++;
+      }
+    }
+
+    // 3. Quét thiết bị hết hạn -> EXPIRED
+    const activeEquipments = await this.equipmentRepo.find();
+    for (const eq of activeEquipments) {
+      if (!eq.expiryDate || eq.status === EquipmentStatus.EXPIRED) continue;
+      const exp = new Date(eq.expiryDate);
+      exp.setHours(0, 0, 0, 0);
+      if (exp < today) {
+        eq.status = EquipmentStatus.EXPIRED;
+        await this.equipmentRepo.save(eq);
+        expiredEquipments++;
       }
     }
 
     return {
       checkedAt: new Date(),
-      totalFacilities: facilities.length,
-      updatedCount,
+      updatedFacilities,
+      overdueInspections,
+      expiredEquipments,
     };
   }
 }

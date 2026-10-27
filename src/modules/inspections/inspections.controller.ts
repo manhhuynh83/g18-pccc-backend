@@ -7,16 +7,22 @@ import {
   Param,
   Query,
 } from '@nestjs/common';
+import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { InspectionsService } from './inspections.service';
 import { RiskLevel } from './facility.entity';
-import { InspectionType, InspectionConclusion } from './inspection.entity';
+import {
+  InspectionType,
+  InspectionStatus,
+  InspectionConclusion,
+} from './inspection.entity';
 
+@ApiTags('Inspections')
 @Controller('inspections')
 export class InspectionsController {
   constructor(private readonly inspectionsService: InspectionsService) {}
 
-  // POST /api/inspections/facilities - Tạo cơ sở mẫu
   @Post('facilities')
+  @ApiOperation({ summary: 'Tạo cơ sở quản lý PCCC' })
   async createFacility(
     @Body()
     body: {
@@ -35,8 +41,8 @@ export class InspectionsController {
     };
   }
 
-  // GET /api/inspections/facilities - Xem danh sách cơ sở
   @Get('facilities')
+  @ApiOperation({ summary: 'Danh sách toàn bộ cơ sở' })
   async getFacilities() {
     const data = await this.inspectionsService.getAllFacilities();
     return {
@@ -46,8 +52,10 @@ export class InspectionsController {
     };
   }
 
-  // POST /api/inspections - Lập lịch kiểm tra (báo trước ít nhất 3 ngày làm việc)
   @Post()
+  @ApiOperation({
+    summary: 'Lập lịch kiểm tra (báo trước >= 3 ngày làm việc nếu PERIODIC)',
+  })
   async schedule(
     @Body()
     body: {
@@ -65,10 +73,23 @@ export class InspectionsController {
     };
   }
 
-  // GET /api/inspections - Danh sách các đợt kiểm tra
   @Get()
-  async findAll(@Query('facilityId') facilityId?: string) {
-    const data = await this.inspectionsService.getAllInspections(facilityId);
+  @ApiOperation({
+    summary:
+      'Danh sách lịch kiểm tra (lọc theo cơ sở, trạng thái, khoảng ngày)',
+  })
+  async findAll(
+    @Query('facilityId') facilityId?: string,
+    @Query('status') status?: InspectionStatus,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    const data = await this.inspectionsService.getAllInspections({
+      facilityId,
+      status,
+      startDate,
+      endDate,
+    });
     return {
       success: true,
       message: 'Lấy danh sách lịch kiểm tra thành công',
@@ -76,8 +97,22 @@ export class InspectionsController {
     };
   }
 
-  // PATCH /api/inspections/:id/complete - Hoàn tất biên bản & tính chu kỳ kế tiếp (+6 hoặc +12 tháng)
+  @Get(':id')
+  @ApiOperation({ summary: 'Xem chi tiết một lịch/biên bản kiểm tra' })
+  async findOne(@Param('id') id: string) {
+    const data = await this.inspectionsService.getInspectionById(id);
+    return {
+      success: true,
+      message: 'Lấy chi tiết lịch kiểm tra thành công',
+      data,
+    };
+  }
+
   @Patch(':id/complete')
+  @ApiOperation({
+    summary:
+      'Hoàn tất biên bản & tự động cập nhật chu kỳ kế tiếp (+6 hoặc +12 tháng)',
+  })
   async complete(
     @Param('id') id: string,
     @Body()
@@ -96,8 +131,10 @@ export class InspectionsController {
     };
   }
 
-  // POST /api/inspections/run-daily-check - Nút kích hoạt kiểm tra quét hạn tức thì phục vụ DEMO
   @Post('run-daily-check')
+  @ApiOperation({
+    summary: 'Chạy tác vụ quét hạn kiểm tra tức thì (Demo Cronjob)',
+  })
   async runCheck() {
     const data = await this.inspectionsService.runDailyCheck();
     return {

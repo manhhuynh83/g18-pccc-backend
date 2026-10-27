@@ -14,16 +14,14 @@ export class EquipmentsService {
     private readonly equipmentRepo: Repository<Equipment>,
   ) {}
 
-  // Công thức Haversine tính khoảng cách giữa 2 tọa độ GPS (trả về mét)
   private calculateHaversineDistance(
     lat1: number,
     lon1: number,
     lat2: number,
     lon2: number,
   ): number {
-    const R = 6371000; // Bán kính Trái Đất (mét)
+    const R = 6371000;
     const toRad = (angle: number) => (angle * Math.PI) / 180;
-
     const dLat = toRad(lat2 - lat1);
     const dLon = toRad(lon2 - lon1);
 
@@ -38,15 +36,29 @@ export class EquipmentsService {
     return Math.round(R * c);
   }
 
-  // Tự động sinh mã QR dạng EQ-YYYY-XXXX không trùng lặp
+  // Sinh mã QR an toàn dựa trên bản ghi có số thứ tự lớn nhất trong năm
   private async generateNextQrCode(): Promise<string> {
     const currentYear = new Date().getFullYear();
-    const count = await this.equipmentRepo.count();
-    const sequence = String(count + 1).padStart(4, '0');
-    return `EQ-${currentYear}-${sequence}`;
+    const prefix = `EQ-${currentYear}-`;
+
+    const latest = await this.equipmentRepo
+      .createQueryBuilder('eq')
+      .where('eq.qrCode LIKE :prefix', { prefix: `${prefix}%` })
+      .orderBy('eq.qrCode', 'DESC')
+      .getOne();
+
+    let nextNumber = 1;
+    if (latest) {
+      const parts = latest.qrCode.split('-');
+      const lastSeq = parseInt(parts[2], 10);
+      if (!isNaN(lastSeq)) {
+        nextNumber = lastSeq + 1;
+      }
+    }
+
+    return `${prefix}${String(nextNumber).padStart(4, '0')}`;
   }
 
-  // 1. Thêm mới thiết bị
   async createEquipment(data: {
     name: string;
     facilityId: string;
@@ -69,7 +81,6 @@ export class EquipmentsService {
     return this.equipmentRepo.save(equipment);
   }
 
-  // 2. Danh sách thiết bị (có lọc theo facilityId)
   async getEquipments(facilityId?: string): Promise<Equipment[]> {
     if (facilityId) {
       return this.equipmentRepo.find({ where: { facilityId } });
@@ -77,7 +88,6 @@ export class EquipmentsService {
     return this.equipmentRepo.find({ order: { createdAt: 'DESC' } });
   }
 
-  // 3. Tra cứu theo mã QR Code
   async getByQrCode(qrCode: string): Promise<Equipment> {
     const item = await this.equipmentRepo.findOne({ where: { qrCode } });
     if (!item) {
@@ -86,19 +96,52 @@ export class EquipmentsService {
     return item;
   }
 
-  // 4. Quét mã QR kiểm tra hiện trường & kiểm tra lệch GPS 200m (Điểm nhấn Demo)
+  // Cập nhật thông tin thiết bị / gia hạn bảo dưỡng (PUT /api/equipments/:id)
+  async updateEquipment(
+    id: string,
+    data: { name?: string; expiryDate?: string; status?: EquipmentStatus },
+  ): Promise<Equipment> {
+    const equipment = await this.equipmentRepo.findOne({ where: { id } });
+    if (!equipment) {
+      throw new NotFoundException('Không tìm thấy thiết bị để cập nhật');
+    }
+
+    if (data.name) equipment.name = data.name;
+    if (data.expiryDate) equipment.expiryDate = new Date(data.expiryDate);
+    if (data.status) equipment.status = data.status;
+
+    return this.equipmentRepo.save(equipment);
+  }
+
+  // Xóa thiết bị (DELETE /api/equipments/:id)
+  async deleteEquipment(id: string): Promise<void> {
+    const result = await this.equipmentRepo.delete(id);
+    if (result.affected === 0) {
+      throw new NotFoundException('Không tìm thấy thiết bị để xóa');
+    }
+  }
+
+  // Quét QR kiểm tra định kỳ có đối chiếu GPS và kiểm tra trạng thái EXPIRED
   async inspectEquipment(
     qrCode: string,
     data: { status: EquipmentStatus; lat: number; lng: number },
   ) {
-    // Kiểm tra tính hợp lệ của tọa độ
     if (data.lat < -90 || data.lat > 90 || data.lng < -180 || data.lng > 180) {
       throw new BadRequestException('Tọa độ GPS không hợp lệ');
     }
 
     const equipment = await this.getByQrCode(qrCode);
 
-    // Tính độ lệch khoảng cách giữa vị trí quét và cơ sở
+    // Nghiệp vụ: Thiết bị đã EXPIRED không thể chuyển lại GOOD bằng cách quét QR
+    if (
+      equipment.status === EquipmentStatus.EXPIRED &&
+      data.status === EquipmentStatus.GOOD
+    ) {
+      throw new BadRequestException(
+        'Thiết bị đã hết hạn (EXPIRED). Phải cập nhật hạn bảo dưỡng mới trước khi đổi sang GOOD!',
+      );
+    }
+
     const distanceDiffMeter = this.calculateHaversineDistance(
       data.lat,
       data.lng,
@@ -106,10 +149,8 @@ export class EquipmentsService {
       equipment.facilityLng,
     );
 
-    // Ngưỡng cảnh báo gian lận theo tài liệu: > 200m
     const isGpsWarning = distanceDiffMeter > 200;
 
-    // Cập nhật kết quả quét vào DB
     equipment.status = data.status;
     equipment.lastCheckedAt = new Date();
     equipment.lastCheckLat = data.lat;
